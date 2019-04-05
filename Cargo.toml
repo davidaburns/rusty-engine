@@ -9,7 +9,6 @@ cgmath = "0.17.0"
 gl = "0.12.0"
 glfw = "0.26.1"
 image = "0.21.0"
-# only needed from chapter 3 on
 tobj = "0.1.6"
 num = "0.2.0"
 rand = "0.6.5"

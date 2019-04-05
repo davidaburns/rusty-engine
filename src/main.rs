@@ -34,21 +34,35 @@ struct GLShader<'a> {
     shader_type: GLenum
 }
 
-pub fn main() {
-    let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
-    glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
-    glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
+impl GLShader<'_> {
+    unsafe fn compile(&self) -> GLuint {
+        let mut success = gl::FALSE as GLint;
+        let mut info_log: Vec<u8> = Vec::with_capacity(512);
+        let shader = gl::CreateShader(self.shader_type);
+        let c_str_source = CString::new(self.shader_src.as_bytes()).unwrap();
 
-    let (mut window, events) = glfw.create_window(SCREEN_WIDTH, SCREEN_HEIGHT, "OpenGL Rust Learning", glfw::WindowMode::Windowed)
-        .expect("Failed to create GlFW Window");
+        gl::ShaderSource(shader, 1, &c_str_source.as_ptr(), ptr::null());
+        gl::CompileShader(shader);
+        gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
 
-    window.make_current();
-    window.set_key_polling(true);
-    window.set_framebuffer_size_polling(true);
+        if success != gl::TRUE as GLint {
+            gl::GetShaderInfoLog(shader, 512, ptr::null_mut(), info_log.as_mut_ptr() as *mut GLchar);
+            println!("ERROR::SHADER::COMPILATION_FAILED\n{}", str::from_utf8(&info_log).unwrap());
+        }
 
-    gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
-    let (shader_program, vao) = unsafe {
-        // Compile & link shaders
+        shader
+    }
+}
+
+struct OpenGLContext {
+    shader_program: GLuint,
+    vao: u32,
+    vbo: u32,
+    ebo: u32
+}
+
+impl OpenGLContext {
+    unsafe fn initialize() -> Self {
         let mut shader_vec: Vec<GLShader> = Vec::new();
         shader_vec.push(GLShader {
             shader_src: VERT_SHADER_SRC,
@@ -60,8 +74,10 @@ pub fn main() {
             shader_type: gl::FRAGMENT_SHADER
         });
 
-        let compiled_shaders = compile_shaders_vec(shader_vec);
-        let shader_program = link_shaders_vec(compiled_shaders);
+        let compiled_shaders = OpenGLContext::compile_shaders_vec(shader_vec);
+        let shader_program = OpenGLContext::link_shaders_vec(compiled_shaders);
+        
+        let (mut vao, mut vbo, mut ebo) = (0, 0, 0);
         let verticies: [f32; 18] = [
              // first triangle
             -0.9, -0.5, 0.0,  // left
@@ -76,8 +92,6 @@ pub fn main() {
             0, 1, 3,
             1, 2, 3
         ];
-
-        let (mut vbo, mut vao, mut ebo) = (0, 0, 0);
 
         gl::GenVertexArrays(1, &mut vao);
         gl::GenBuffers(1, &mut vbo);
@@ -101,87 +115,124 @@ pub fn main() {
         gl::BindBuffer(gl::ARRAY_BUFFER, 0);
         gl::BindVertexArray(0);
 
-        (shader_program, vao)
-    };
-
-    while !window.should_close() {
-        process_events(&mut window, &events);
-        unsafe {
-            gl::ClearColor(0.2, 0.3, 0.3, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-
-            gl::UseProgram(shader_program);
-            gl::BindVertexArray(vao);
-            gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, ptr::null());
-        }
-
-        window.swap_buffers();
-        glfw.poll_events();
-    }
-}
-
-fn process_events(window: &mut glfw::Window, events: &Receiver<(f64, glfw::WindowEvent)>) {
-    for(_, event) in glfw::flush_messages(events) {
-        match event {
-            glfw::WindowEvent::FramebufferSize(width, height) => {
-                unsafe {
-                    gl::Viewport(0, 0, width, height)
-                }
-            },
-            glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                window.set_should_close(true);
-            },
-            _ => { }
+        Self {
+            shader_program: shader_program,
+            vao: vao,
+            vbo: vbo,
+            ebo: ebo
         }
     }
-}
 
-unsafe fn compile_shaders_vec(shaders: Vec<GLShader>) -> Vec<GLuint> {
-    let mut success = gl::FALSE as GLint;
-    let mut info_log: Vec<u8> = Vec::with_capacity(512);
-    let mut compiled_shaders: Vec<GLuint> = Vec::new();
+    unsafe fn compile_shaders_vec(shaders: Vec<GLShader>) -> Vec<GLuint> {
+        let mut compiled_shaders: Vec<GLuint> = Vec::new();
+        for shader in shaders {
+            compiled_shaders.push(shader.compile());
+        }
 
-    for i in shaders {
-        let shader = gl::CreateShader(i.shader_type);
-        let c_str_source = CString::new(i.shader_src.as_bytes()).unwrap();
+        compiled_shaders
+    }
 
-        gl::ShaderSource(shader, 1, &c_str_source.as_ptr(), ptr::null());
-        gl::CompileShader(shader);
-        gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
+    unsafe fn link_shaders_vec(compiled_shaders: Vec<GLuint>) -> GLuint {
+        let mut success = gl::FALSE as GLint;
+        let mut info_log: Vec<u8> = Vec::with_capacity(512);
+        let shader_program: GLuint = gl::CreateProgram();
 
+        // Attatch the shaders
+        for i in &compiled_shaders {
+            gl::AttachShader(shader_program, *i);
+        }
+
+        gl::LinkProgram(shader_program);
+        gl::GetProgramiv(shader_program, gl::LINK_STATUS, &mut success);
         if success != gl::TRUE as GLint {
-            gl::GetShaderInfoLog(shader, 512, ptr::null_mut(), info_log.as_mut_ptr() as *mut GLchar);
-            println!("ERROR::SHADER::COMPILATION_FAILED\n{}", str::from_utf8(&info_log).unwrap());
+            gl::GetProgramInfoLog(shader_program, 512, ptr::null_mut(), info_log.as_mut_ptr() as *mut GLchar);
+            println!("ERROR::SHADER::PROGRAM::COMPILATION_FAILED\n{}", str::from_utf8(&info_log).unwrap());
         }
 
-        compiled_shaders.push(shader);
-    }
+        // Delete the shaders
+        for i in &compiled_shaders {
+            gl::DeleteShader(*i);
+        }
 
-    compiled_shaders
+        // Return the final linked shader program
+        shader_program
+    }
 }
 
-unsafe fn link_shaders_vec(shaders: Vec<GLuint>) -> GLuint {
-    let mut success = gl::FALSE as GLint;
-    let mut info_log: Vec<u8> = Vec::with_capacity(512);
-    let shader_program: GLuint = gl::CreateProgram();
+struct OpenGLApplication<'a> {
+    screen_width: u32,
+    screen_height: u32,
+    title: &'a str,
+    glfw: glfw::Glfw,
+    window: glfw::Window,
+    window_events: Receiver<(f64, glfw::WindowEvent)>,
+    opengl_context: OpenGLContext
+}
 
-    // Attatch the shaders
-    for i in &shaders {
-        gl::AttachShader(shader_program, *i);
+impl<'a> OpenGLApplication<'a> {
+    fn initialize(width: u32, height: u32, title: &'a str) -> Self {
+        let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
+        glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
+        glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
+
+        let (mut window, events) = glfw.create_window(width, height, title, glfw::WindowMode::Windowed)
+            .expect("Failed to create GLFW Window");
+
+        window.make_current();
+        window.set_key_polling(true);
+        window.set_framebuffer_size_polling(true);
+
+        gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
+
+        let opengl_context = unsafe { OpenGLContext::initialize() };
+        Self {
+            screen_width: width,
+            screen_height: height,
+            title: title,
+            glfw: glfw,
+            window: window,
+            window_events: events,
+            opengl_context: opengl_context
+        }
     }
 
-    gl::LinkProgram(shader_program);
-    gl::GetProgramiv(shader_program, gl::LINK_STATUS, &mut success);
-    if success != gl::TRUE as GLint {
-        gl::GetProgramInfoLog(shader_program, 512, ptr::null_mut(), info_log.as_mut_ptr() as *mut GLchar);
-        println!("ERROR::SHADER::PROGRAM::COMPILATION_FAILED\n{}", str::from_utf8(&info_log).unwrap());
+    fn run(&mut self) {
+        while !self.window.should_close() {
+            self.process_window_events();
+
+            unsafe {
+                gl::ClearColor(0.2, 0.3, 0.3, 1.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+                gl::UseProgram(self.opengl_context.shader_program);
+                gl::BindVertexArray(self.opengl_context.vao);
+                gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, ptr::null());
+            }
+
+            self.window.swap_buffers();
+            self.glfw.poll_events();
+        }
     }
 
-    // Delete the shaders
-    for i in &shaders {
-        gl::DeleteShader(*i);
+    fn process_window_events(&mut self) {
+        for (_, event) in glfw::flush_messages(&self.window_events) {
+            match event {
+                glfw::WindowEvent::FramebufferSize(width, height) => {
+                    unsafe {
+                        gl::Viewport(0, 0, width, height);
+                        self.screen_width = width as u32;
+                        self.screen_height = height as u32;
+                    } 
+                },
+                glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
+                    self.window.set_should_close(true);
+                },
+                _ => {}
+            }
+        }
     }
+}
 
-    // Return the final linked shader program
-    shader_program
+pub fn main() {
+    let mut app: OpenGLApplication = OpenGLApplication::initialize(SCREEN_WIDTH, SCREEN_HEIGHT, "OpenGL Learning");
+    app.run();
 }
